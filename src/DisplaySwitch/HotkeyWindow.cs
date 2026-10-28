@@ -5,8 +5,8 @@ using DisplaySwitch.Native;
 namespace DisplaySwitch;
 
 /// <summary>
-/// Hidden message-only window that receives the global hotkeys and timer ticks, and that
-/// "DisplaySwitch.exe --exit" finds to ask the running copy to quit.
+/// Hidden message-only window that receives the global hotkeys, timer ticks and results posted
+/// from background work, and that "DisplaySwitch.exe --exit" finds to ask the running copy to quit.
 /// </summary>
 internal sealed unsafe class HotkeyWindow : IDisposable
 {
@@ -17,12 +17,14 @@ internal sealed unsafe class HotkeyWindow : IDisposable
     private readonly nint _hwnd;
     private readonly Action<int> _onHotkey;
     private readonly Action<nuint> _onTimer;
+    private readonly Action<nuint, nint> _onPosted;
     private readonly List<int> _registered = [];
 
-    public HotkeyWindow(Action<int> onHotkey, Action<nuint> onTimer)
+    public HotkeyWindow(Action<int> onHotkey, Action<nuint> onTimer, Action<nuint, nint> onPosted)
     {
         _onHotkey = onHotkey;
         _onTimer = onTimer;
+        _onPosted = onPosted;
         nint instance = Kernel32.GetModuleHandle(null);
 
         fixed (char* className = ClassName)
@@ -63,6 +65,9 @@ internal sealed unsafe class HotkeyWindow : IDisposable
     public void StartTimer(nuint id, uint intervalMs) => User32.SetTimer(_hwnd, id, intervalMs, 0);
 
     public void StopTimer(nuint id) => User32.KillTimer(_hwnd, id);
+
+    /// <summary>Hands two values to the window's thread; safe to call from any thread.</summary>
+    public void Post(nuint wParam, nint lParam) => User32.PostMessage(_hwnd, User32.WM_APP, wParam, lParam);
 
     /// <summary>Ends the message loop.</summary>
     public void Close() => User32.PostMessage(_hwnd, User32.WM_CLOSE, 0, 0);
@@ -105,6 +110,10 @@ internal sealed unsafe class HotkeyWindow : IDisposable
 
             case User32.WM_TIMER:
                 s_instance?._onTimer(wParam);
+                return 0;
+
+            case User32.WM_APP:
+                s_instance?._onPosted(wParam, lParam);
                 return 0;
 
             case User32.WM_CLOSE:

@@ -7,10 +7,14 @@ internal static unsafe partial class User32
     public const uint WM_DESTROY = 0x0002;
     public const uint WM_PAINT = 0x000F;
     public const uint WM_CLOSE = 0x0010;
+    public const uint WM_SETTINGCHANGE = 0x001A;
     public const uint WM_DISPLAYCHANGE = 0x007E;
     public const uint WM_TIMER = 0x0113;
     public const uint WM_DPICHANGED = 0x02E0;
     public const uint WM_HOTKEY = 0x0312;
+    public const uint WM_APP = 0x8000;
+
+    public const uint SPI_SETWORKAREA = 0x002F;
 
     public const uint MOD_NOREPEAT = 0x4000;
     public const int SM_CMONITORS = 80;

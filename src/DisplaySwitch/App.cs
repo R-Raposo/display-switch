@@ -15,8 +15,10 @@ internal sealed class App : IDisposable
     private readonly Toast _toast = new();
     private readonly HotkeyWindow _window;
     private long _extendDeadline;
+    private bool _switching;
+    private DisplayMode? _pending;
 
-    public App() => _window = new HotkeyWindow(OnHotkey, OnTimer);
+    public App() => _window = new HotkeyWindow(OnHotkey, OnTimer, OnSwitchDone);
 
     /// <summary>
     /// Registers the configured hotkeys. Returns false when there is nothing to run for
@@ -87,8 +89,38 @@ internal sealed class App : IDisposable
 
         _window.StopTimer(ExtendCheckTimer);
 
-        // Switch first; everything else only reports the result
-        int result = Display.Switch(mode);
+        // Confirm straight away: Windows can take a few seconds to bring a monitor up
+        _toast.Show(Label(mode));
+        if (_switching)
+        {
+            _pending = mode; // applied as soon as the running switch finishes
+            return;
+        }
+        StartSwitch(mode);
+    }
+
+    /// <summary>
+    /// SetDisplayConfig blocks until Windows has applied the change, so it runs on a worker thread
+    /// and the result is posted back to this thread, keeping the popup responsive meanwhile.
+    /// </summary>
+    private void StartSwitch(DisplayMode mode)
+    {
+        _switching = true;
+        _ = Task.Run(() => _window.Post((nuint)mode, Display.Switch(mode)));
+    }
+
+    private void OnSwitchDone(nuint modeValue, nint resultValue)
+    {
+        var mode = (DisplayMode)(int)modeValue;
+        int result = (int)resultValue;
+        _switching = false;
+
+        if (_pending is { } next)
+        {
+            _pending = null;
+            StartSwitch(next);
+            return;
+        }
 
         if (mode == DisplayMode.MainScreenOnly || Display.MonitorCount >= 2)
         {
@@ -97,7 +129,6 @@ internal sealed class App : IDisposable
         }
 
         // Extend, but the second screen isn't active yet: a slow monitor or dock, or none connected
-        _toast.Show(Label(mode));
         _extendDeadline = Environment.TickCount64 + ExtendWaitMs;
         _window.StartTimer(ExtendCheckTimer, ExtendCheckIntervalMs);
     }

@@ -173,6 +173,11 @@ internal sealed unsafe class Toast : IDisposable
                 toast.Place();
                 break;
 
+            // The taskbar arrives on a screen after the switch, shrinking its work area: move above it
+            case User32.WM_SETTINGCHANGE when wParam == User32.SPI_SETWORKAREA && toast is not null && User32.IsWindowVisible(hwnd):
+                toast.Place();
+                break;
+
             // The popup sizes itself for each screen's DPI; ignore Windows' suggested size
             case User32.WM_DPICHANGED:
                 return 0;
