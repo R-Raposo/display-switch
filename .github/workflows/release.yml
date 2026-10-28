@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - rid: win-x64
+            runner: windows-latest
+          - rid: win-arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Test
+        run: dotnet test DisplaySwitch.slnx -c Release
+
+      - name: Publish and package
+        shell: pwsh
+        run: |
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          dotnet publish src/DisplaySwitch -c Release -r ${{ matrix.rid }} -p:Version=$version -o publish
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+          $stage = 'stage/DisplaySwitch'
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item publish/DisplaySwitch.exe, Install.cmd, install.ps1, Uninstall.cmd, uninstall.ps1, README.md, LICENSE $stage
+          Compress-Archive -Path $stage -DestinationPath 'DisplaySwitch-${{ matrix.rid }}.zip'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DisplaySwitch-${{ matrix.rid }}
+          path: DisplaySwitch-${{ matrix.rid }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum *.zip > SHA256SUMS.txt
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/*.zip'
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create '${{ github.ref_name }}' dist/*.zip dist/SHA256SUMS.txt
+          --repo '${{ github.repository }}' --title '${{ github.ref_name }}' --generate-notes

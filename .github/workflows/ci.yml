@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Test
+        run: dotnet test DisplaySwitch.slnx -c Release
+
+      - name: Publish (Native AOT)
+        run: dotnet publish src/DisplaySwitch -c Release -r win-x64 -o artifacts/win-x64
+
+      - name: Report exe size
+        shell: pwsh
+        run: |
+          $exe = Get-Item artifacts/win-x64/DisplaySwitch.exe
+          "DisplaySwitch.exe: {0:N0} bytes" -f $exe.Length
