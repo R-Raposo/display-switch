@@ -1,16 +1,22 @@
-# Installs the Display Switch shortcuts for the current user.
-# Asks for a hotkey per display mode and re-asks when the combination is
-# invalid or already taken. Safe to re-run to change hotkeys.
+# Installs Display Switch for the current user.
+# Asks for a hotkey per display mode, re-asks when a combination is invalid or already
+# taken, installs DisplaySwitch.exe and starts it at sign-in. Safe to re-run to change hotkeys.
 
 $ErrorActionPreference = 'Stop'
 
 $Modes = @(
-    @{ Mode = 'internal'; Name = 'Main screen only';   Default = 'Ctrl+Alt+F9' },
-    @{ Mode = 'extend';   Name = 'Extend displays';    Default = 'Ctrl+Alt+F10' }
+    @{ Key = 'MainScreenOnly'; Name = 'Main screen only'; Default = 'Ctrl+Alt+F9' },
+    @{ Key = 'ExtendDisplays'; Name = 'Extend displays';  Default = 'Ctrl+Alt+F10' }
 )
 
-$InstallDir = Join-Path $env:LOCALAPPDATA 'DisplaySwitch'
-$MenuDir    = Join-Path ([Environment]::GetFolderPath('Programs')) 'Display Switch'
+$InstallDir    = Join-Path $env:LOCALAPPDATA 'DisplaySwitch'
+$ExePath       = Join-Path $InstallDir 'DisplaySwitch.exe'
+$SettingsPath  = Join-Path $InstallDir 'settings.ini'
+$StartupLink   = Join-Path ([Environment]::GetFolderPath('Startup')) 'Display Switch.lnk'
+
+# Previous version: Start menu shortcuts with hotkeys that ran a PowerShell script
+$LegacyMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) 'Display Switch'
+$LegacyScript  = Join-Path $InstallDir 'switch-display.ps1'
 
 Add-Type -Namespace DisplaySwitch -Name Native -MemberDefinition @'
 [DllImport("user32.dll", SetLastError = true)] public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint mods, uint vk);
@@ -48,13 +54,12 @@ function ConvertTo-Hotkey([string]$Text) {
 }
 
 # Hotkeys set on other shortcuts in the desktop and Start menu, keyed by their text.
-function Get-ShortcutHotkeys([string]$Exclude) {
+function Get-ShortcutHotkeys {
     $shell = New-Object -ComObject WScript.Shell
     $found = @{}
     $roots = 'Desktop', 'CommonDesktopDirectory', 'StartMenu', 'CommonStartMenu' |
         ForEach-Object { [Environment]::GetFolderPath($_) } | Where-Object { $_ -and (Test-Path $_) }
     foreach ($lnk in (Get-ChildItem $roots -Filter *.lnk -Recurse -ErrorAction SilentlyContinue)) {
-        if ($Exclude -and $lnk.FullName.StartsWith($Exclude, 'OrdinalIgnoreCase')) { continue }
         try { $hk = $shell.CreateShortcut($lnk.FullName).Hotkey } catch { continue }
         if (-not $hk) { continue }
         $parsed = ConvertTo-Hotkey $hk
@@ -63,7 +68,7 @@ function Get-ShortcutHotkeys([string]$Exclude) {
     $found
 }
 
-# True if some program (or another shortcut) already owns this combination.
+# True if some program (or a shortcut) already owns this combination.
 function Test-HotkeyTaken($Hotkey) {
     $id = 0x5D5
     $ok = [DisplaySwitch.Native]::RegisterHotKey([IntPtr]::Zero, $id, $Hotkey.Modifiers -bor 0x4000, $Hotkey.Vk)
@@ -71,8 +76,8 @@ function Test-HotkeyTaken($Hotkey) {
     -not $ok
 }
 
-# Waits until Explorer has registered ($Taken = $true) or released ($Taken = $false)
-# a shortcut's hotkey. Returns whether that happened before the timeout.
+# Waits until a hotkey is owned ($Taken = $true) or free ($Taken = $false).
+# Returns whether that happened before the timeout.
 function Wait-HotkeyState($Hotkey, [bool]$Taken, [int]$TimeoutMs = 4000) {
     $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
     do {
@@ -87,7 +92,7 @@ function Send-ShellRefresh {
 }
 
 # Returns @{ Errors = @(...); Warnings = @(...) } for a parsed hotkey.
-function Test-Hotkey($Hotkey, [string[]]$AlreadyChosen, [hashtable]$ShortcutHotkeys, [string[]]$OwnPrevious) {
+function Test-Hotkey($Hotkey, [string[]]$AlreadyChosen, [hashtable]$ShortcutHotkeys) {
     $errors = @(); $warnings = @()
     $modCount = [int]$Hotkey.Ctrl + [int]$Hotkey.Alt + [int]$Hotkey.Shift
 
@@ -107,7 +112,7 @@ function Test-Hotkey($Hotkey, [string[]]$AlreadyChosen, [hashtable]$ShortcutHotk
         if ($ShortcutHotkeys.ContainsKey($Hotkey.Text)) {
             $errors += "Already used by the shortcut '$($ShortcutHotkeys[$Hotkey.Text])'."
         }
-        elseif ($OwnPrevious -notcontains $Hotkey.Text -and (Test-HotkeyTaken $Hotkey)) {
+        elseif (Test-HotkeyTaken $Hotkey) {
             $errors += 'Already taken by another program.'
         }
     }
@@ -121,7 +126,7 @@ function Test-Hotkey($Hotkey, [string[]]$AlreadyChosen, [hashtable]$ShortcutHotk
     @{ Errors = $errors; Warnings = $warnings }
 }
 
-function Read-Hotkey($ModeInfo, [string[]]$AlreadyChosen, [hashtable]$ShortcutHotkeys, [string[]]$OwnPrevious) {
+function Read-Hotkey($ModeInfo, [string[]]$AlreadyChosen, [hashtable]$ShortcutHotkeys) {
     while ($true) {
         $answer = "$(Read-Host "Hotkey for '$($ModeInfo.Name)' [Enter = $($ModeInfo.Default), 'none' = no hotkey]")".Trim()
         if (-not $answer) { $answer = $ModeInfo.Default }
@@ -133,7 +138,7 @@ function Read-Hotkey($ModeInfo, [string[]]$AlreadyChosen, [hashtable]$ShortcutHo
             continue
         }
 
-        $check = Test-Hotkey $hotkey $AlreadyChosen $ShortcutHotkeys $OwnPrevious
+        $check = Test-Hotkey $hotkey $AlreadyChosen $ShortcutHotkeys
         if ($check.Errors.Count) {
             $check.Errors | ForEach-Object { Write-Host "  $($hotkey.Text): $_" -ForegroundColor Yellow }
             continue
@@ -146,93 +151,107 @@ function Read-Hotkey($ModeInfo, [string[]]$AlreadyChosen, [hashtable]$ShortcutHo
     }
 }
 
+# Asks a running Display Switch to quit and waits for it, so its hotkeys are free and the exe can be replaced.
+function Stop-DisplaySwitch {
+    if (Test-Path $ExePath) {
+        Start-Process $ExePath -ArgumentList '--exit' -Wait
+    }
+    $running = Get-Process DisplaySwitch -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $ExePath }
+    if ($running) {
+        $running | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+        $running | Where-Object { -not $_.HasExited } | Stop-Process -Force
+    }
+}
+
+# Removes the previous PowerShell version. Its shortcut hotkeys are cleared first and released
+# by Windows before the shortcuts are deleted; Explorer mixes up hotkeys otherwise.
+function Remove-LegacyVersion {
+    if (Test-Path $LegacyMenuDir) {
+        $shell = New-Object -ComObject WScript.Shell
+        $released = @()
+        foreach ($lnk in (Get-ChildItem $LegacyMenuDir -Filter *.lnk)) {
+            $s = $shell.CreateShortcut($lnk.FullName)
+            $old = ConvertTo-Hotkey $s.Hotkey
+            if ($old) { $s.Hotkey = ''; $s.Save(); $released += $old }
+        }
+        if ($released.Count) {
+            Send-ShellRefresh
+            foreach ($old in $released) { [void](Wait-HotkeyState $old $false) }
+        }
+        Remove-Item $LegacyMenuDir -Recurse -Force
+        Write-Host 'Removed the previous version (Start menu shortcuts).'
+    }
+    if (Test-Path $LegacyScript) { Remove-Item $LegacyScript -Force }
+}
+
 function Install-DisplaySwitch {
+    $source = Join-Path $PSScriptRoot 'DisplaySwitch.exe'
+    if (-not (Test-Path $source)) {
+        Write-Host 'DisplaySwitch.exe was not found next to install.ps1.' -ForegroundColor Red
+        Write-Host 'Download a release zip from the GitHub Releases page rather than the source code.' -ForegroundColor Red
+        exit 1
+    }
+
     Write-Host ''
     Write-Host 'Display Switch installer' -ForegroundColor Cyan
     Write-Host 'Pick a keyboard shortcut for each display mode. Press Enter to accept the suggestion.'
     Write-Host ''
 
-    # Hotkeys from a previous install count as ours, not as conflicts
-    $shell = New-Object -ComObject WScript.Shell
-    $ownPrevious = @()
-    if (Test-Path $MenuDir) {
-        $ownPrevious = Get-ChildItem $MenuDir -Filter *.lnk | ForEach-Object {
-            $p = ConvertTo-Hotkey $shell.CreateShortcut($_.FullName).Hotkey
-            if ($p) { $p.Text }
-        }
-    }
+    Stop-DisplaySwitch
+    Remove-LegacyVersion
 
-    $shortcutHotkeys = Get-ShortcutHotkeys -Exclude $MenuDir
+    $shortcutHotkeys = Get-ShortcutHotkeys
     $chosen = @{}
     foreach ($m in $Modes) {
-        $chosen[$m.Mode] = Read-Hotkey $m @($chosen.Values | ForEach-Object { $_.Text }) $shortcutHotkeys $ownPrevious
+        $chosen[$m.Key] = Read-Hotkey $m @($chosen.Values | ForEach-Object { $_.Text }) $shortcutHotkeys
     }
 
     New-Item -ItemType Directory -Force $InstallDir | Out-Null
-    $script = Join-Path $InstallDir 'switch-display.ps1'
-    Copy-Item (Join-Path $PSScriptRoot 'switch-display.ps1') $script -Force
-    Unblock-File $script
+    Copy-Item $source $ExePath -Force
+    Unblock-File $ExePath
 
-    # Explorer keeps its own list of shortcut hotkeys and can mix them up when
-    # shortcuts that still have hotkeys are deleted or renamed. So first clear the
-    # hotkeys on our existing shortcuts and wait for Windows to release them; the
-    # new hotkeys are then registered from scratch.
-    New-Item -ItemType Directory -Force $MenuDir | Out-Null
-    $released = @()
-    foreach ($lnk in (Get-ChildItem $MenuDir -Filter *.lnk)) {
-        $s = $shell.CreateShortcut($lnk.FullName)
-        $old = ConvertTo-Hotkey $s.Hotkey
-        if ($old) { $s.Hotkey = ''; $s.Save(); $released += $old }
+    $lines = foreach ($m in $Modes) {
+        $value = if ($chosen[$m.Key]) { $chosen[$m.Key].Text } else { 'none' }
+        "$($m.Key)=$value"
     }
-    if ($released.Count) {
-        Send-ShellRefresh
-        foreach ($old in $released) { [void](Wait-HotkeyState $old $false) }
+    Set-Content -Path $SettingsPath -Value $lines -Encoding ASCII
+
+    $active = @($Modes | Where-Object { $chosen[$_.Key] })
+    if (-not $active.Count) {
+        if (Test-Path $StartupLink) { Remove-Item $StartupLink -Force }
+        Write-Host ''
+        Write-Host 'No hotkeys chosen, so Display Switch will not run. Run Install.cmd again to pick some.' -ForegroundColor Yellow
+        return
     }
-    $names = $Modes | ForEach-Object { "$($_.Name).lnk" }
-    Get-ChildItem $MenuDir -Filter *.lnk | Where-Object { $names -notcontains $_.Name } | Remove-Item -Force
 
-    # conhost --headless hides the console completely; older Windows 10 builds lack it
-    $headless = [Environment]::OSVersion.Version.Build -ge 19041
-    $psArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`""
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $shell.CreateShortcut($StartupLink)
+    $link.TargetPath = $ExePath
+    $link.WorkingDirectory = $InstallDir
+    $link.Description = 'Display Switch: hotkeys to switch display mode'
+    $link.Save()
 
-    $saveShortcut = {
-        param($m)
-        $s = $shell.CreateShortcut((Join-Path $MenuDir "$($m.Name).lnk"))
-        if ($headless) {
-            $s.TargetPath = "$env:WINDIR\System32\conhost.exe"
-            $s.Arguments  = "--headless powershell.exe $psArgs -Mode $($m.Mode)"
-        }
-        else {
-            $s.TargetPath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
-            $s.Arguments  = "$psArgs -Mode $($m.Mode)"
-        }
-        $s.IconLocation = "$env:WINDIR\System32\DisplaySwitch.exe,0"
-        $s.Description  = "Switch display mode: $($m.Name)"
-        $s.Hotkey = if ($chosen[$m.Mode]) { $chosen[$m.Mode].Text } else { '' }
-        $s.Save()
-    }
-    foreach ($m in $Modes) { & $saveShortcut $m }
-    Send-ShellRefresh
+    Start-Process $ExePath
 
+    # The program owns its hotkeys once it is running
     $inactive = @()
-    foreach ($m in $Modes) {
-        $hk = $chosen[$m.Mode]
-        if ($hk -and -not (Wait-HotkeyState $hk $true)) { $inactive += $hk.Text }
+    foreach ($m in $active) {
+        if (-not (Wait-HotkeyState $chosen[$m.Key] $true)) { $inactive += $chosen[$m.Key].Text }
     }
 
     Write-Host ''
     Write-Host 'Installed.' -ForegroundColor Green
     foreach ($m in $Modes) {
-        $text = if ($chosen[$m.Mode]) { $chosen[$m.Mode].Text } else { '(no hotkey)' }
+        $text = if ($chosen[$m.Key]) { $chosen[$m.Key].Text } else { '(no hotkey)' }
         Write-Host ("  {0,-20} {1}" -f $m.Name, $text)
     }
     if ($inactive.Count) {
         Write-Host ''
-        Write-Host "Windows has not activated $($inactive -join ' and ') yet. Sign out and back in" -ForegroundColor Yellow
-        Write-Host '(or restart) and it will start working.' -ForegroundColor Yellow
+        Write-Host "Display Switch could not register $($inactive -join ' and '). Another program may have taken it;" -ForegroundColor Yellow
+        Write-Host 'run Install.cmd again and pick another.' -ForegroundColor Yellow
     }
     Write-Host ''
-    Write-Host "Shortcuts are in the Start menu under 'Display Switch'."
+    Write-Host 'Display Switch is running and starts automatically when you sign in.'
     Write-Host 'Try your hotkeys now. Some tools grab keys in a way Windows cannot report, so if'
     Write-Host 'something else happens (e.g. the PC locks), run Install.cmd again and pick another.'
     Write-Host 'On laptops you may need to hold Fn for F1-F12.'
