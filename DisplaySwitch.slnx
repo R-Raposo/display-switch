@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DisplaySwitch.Tests/DisplaySwitch.Tests.csproj" />
+    <Project Path="src/DisplaySwitch/DisplaySwitch.csproj" />
+  </Folder>
+</Solution>
